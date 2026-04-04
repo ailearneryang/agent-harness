@@ -1,0 +1,15 @@
+name: dev-test-deploy
+description: 开发→测试→审查→部署 闭环流程
+default_prompt: 实现一个快速排序函数，支持自定义比较器
+
+steps:
+  - agent: CodeGen
+
+  - agent: TestRunner
+    on_fail_goto: CodeGen
+    max_loops: 3
+
+  - agent: Reviewer
+    condition: prev_success
+
+  - agent: Deployer

@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+
+# Harness 运行时数据
+.harness_data/
+.harness_workspaces/
+.harness_workspace/
+
+# 环境变量（所有 .env 文件都不提交）
+.env
+**/.env
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# 测试
+.pytest_cache/
+
+# Docker
+*.db
+
+# Kiro
+.kiro/

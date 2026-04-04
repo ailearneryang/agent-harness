@@ -1,0 +1,10 @@
+name: requirement-loop
+description: 需求生成→评审闭环，评审不通过自动回退重新生成，最多 5 次
+default_prompt: 开发一个新能源汽车 BMS 电池管理系统，支持 SOC 估算、热管理、均衡控制和故障诊断
+
+steps:
+  - agent: RequirementGen
+
+  - agent: RequirementReview
+    on_fail_goto: RequirementGen
+    max_loops: 5

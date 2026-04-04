@@ -1,0 +1,9 @@
+.venv
+__pycache__
+*.pyc
+.harness_data
+.harness_workspaces
+.harness_workspace
+tests
+*.db
+.git

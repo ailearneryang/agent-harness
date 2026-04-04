@@ -1,0 +1,12 @@
+name: parallel-review
+description: 代码生成后，审查和测试并行执行
+default_prompt: 实现一个 LRU 缓存
+
+steps:
+  - agent: CodeGen
+
+  - agent: [TestRunner, Reviewer]
+    abort_on_fail: true
+
+  - agent: Deployer
+    condition: prev_success

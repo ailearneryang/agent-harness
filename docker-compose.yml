@@ -1,0 +1,19 @@
+services:
+  harness:
+    build: .
+    ports:
+      - "8080:8080"
+    environment:
+      - HARNESS_API_TOKEN=${HARNESS_API_TOKEN:-}
+      - HARNESS_RATE_LIMIT=${HARNESS_RATE_LIMIT:-30}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+    volumes:
+      - harness_data:/app/.harness_data
+      - harness_workspaces:/app/.harness_workspaces
+      - ./agents.yaml:/app/agents.yaml        # 挂载配置，改了不用重建镜像
+      - ./pipelines:/app/pipelines
+    restart: unless-stopped
+
+volumes:
+  harness_data:
+  harness_workspaces:

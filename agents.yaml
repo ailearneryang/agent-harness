@@ -1,0 +1,66 @@
+# Agent 注册配置
+# 支持三种类型: class（Python 类）、remote（HTTP 远程）、shell（命令行）
+
+agents:
+  - name: CodeGen
+    module: agent_harness.agents.codegen
+    class: CodeGenAgent
+    description: 代码生成 Agent，对接 LLM 生成代码
+    category: codegen
+    config:
+      mock: true
+
+  - name: TestRunner
+    module: agent_harness.agents.test_runner
+    class: TestRunnerAgent
+    description: 测试验证 Agent，执行单元测试并返回结果
+    category: test
+    config:
+      mock: true
+      fail_first_n: 1
+
+  - name: Reviewer
+    module: agent_harness.agents.reviewer
+    class: ReviewerAgent
+    description: 代码审查 Agent，检查代码质量
+    category: review
+
+  - name: Deployer
+    module: agent_harness.agents.deployer
+    class: DeployerAgent
+    description: 部署 Agent，将代码部署到目标环境
+    category: deploy
+
+  # --- 远程 Agent ---
+  - name: RequirementGen
+    type: remote
+    endpoint: http://localhost:9001/run
+    health_endpoint: http://localhost:9001/health
+    description: 需求生成 Agent，根据 prompt 生成结构化需求文档
+    category: requirement
+    timeout: 120
+
+  - name: RequirementReview
+    type: remote
+    endpoint: http://localhost:9002/run
+    health_endpoint: http://localhost:9002/health
+    description: 需求评审 Agent，评审需求文档质量
+    category: requirement
+    timeout: 120
+
+  # 示例：远程 agent（取消注释启用）
+  # - name: RemoteLLM
+  #   type: remote
+  #   endpoint: http://localhost:9000/generate
+  #   description: 远程 LLM 服务
+  #   category: codegen
+  #   config:
+  #     headers:
+  #       Authorization: Bearer ${OPENAI_API_KEY}
+
+  # 示例：Shell agent（取消注释启用）
+  # - name: Linter
+  #   type: shell
+  #   command: "python3 -m pylint {workspace}/solution.py --disable=all --enable=E"
+  #   description: 代码静态检查
+  #   category: review
