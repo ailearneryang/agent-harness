@@ -59,6 +59,11 @@ class Harness:
                 ctx.pipeline_id = pipeline_id
                 ctx.shared.update(checkpoint["context"].get("shared", {}))
                 ctx.history = checkpoint["context"].get("history", [])
+                # 恢复 workspace
+                saved_ws = checkpoint["context"].get("workspace")
+                if saved_ws:
+                    from pathlib import Path as _Path
+                    ctx.workspace = _Path(saved_ws)
                 start_step = checkpoint["resume_from_step"]
                 logger.info("Resuming pipeline %s from step %d", pipeline_id[:8], start_step)
             else:
@@ -163,6 +168,8 @@ class Harness:
                 self.store.save_checkpoint(pipeline_id, i, {
                     "shared": ctx.shared,
                     "history": ctx.history,
+                    "pipeline_name": pipeline.name,
+                    "workspace": str(ctx.workspace),
                 })
                 break
 

@@ -41,10 +41,32 @@
     .ws-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
     .dot-ok { background: #22c55e; }
     .dot-fail { background: #ef4444; }
+
+    /* Toast */
+    .toast-container { position: fixed; top: 16px; right: 16px; z-index: 1000; display: flex; flex-direction: column; gap: 8px; max-width: 400px; }
+    .toast { padding: 10px 16px; border-radius: 8px; display: flex; align-items: center; gap: 8px; cursor: pointer; font-size: 13px; box-shadow: 0 4px 12px rgba(0,0,0,0.3); animation: slideIn 0.3s ease; }
+    .toast-error { background: #450a0a; border: 1px solid #ef4444; color: #fca5a5; }
+    .toast-warning { background: #451a03; border: 1px solid #f59e0b; color: #fde68a; }
+    .toast-success { background: #14532d; border: 1px solid #22c55e; color: #bbf7d0; }
+    .toast-icon { font-size: 15px; }
+    .toast-msg { flex: 1; line-height: 1.4; }
+    @keyframes slideIn { from { transform: translateX(100%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+    .toast-enter-active { animation: slideIn 0.3s ease; }
+    .toast-leave-active { animation: slideIn 0.3s ease reverse; }
   </style>
 </head>
 <body>
 <div id="app">
+  <!-- Toast 通知 -->
+  <div class="toast-container">
+    <transition-group name="toast">
+      <div class="toast" v-for="t in toasts" :key="t.id" :class="'toast-'+t.type" @click="removeToast(t.id)">
+        <span class="toast-icon">{{ t.type === 'error' ? '❌' : t.type === 'warning' ? '⚠️' : '✅' }}</span>
+        <span class="toast-msg">{{ t.message }}</span>
+      </div>
+    </transition-group>
+  </div>
+
   <div class="container">
     <h1>🤖 <span>Agent Harness</span></h1>
     <div class="subtitle">
@@ -63,10 +85,59 @@
     <!-- ===== AGENTS TAB ===== -->
     <div v-show="tab==='agents'">
       <div class="agent-toolbar">
+        <button class="btn btn-sm btn-primary" @click="showAddAgent=true">+ 添加 Agent</button>
         <button class="btn btn-sm btn-outline" @click="checkHealth">🩺 健康检查</button>
         <span class="health-summary" v-if="healthData">
           {{ healthyCount }}/{{ Object.keys(healthData).length }} 可用
         </span>
+      </div>
+
+      <!-- 添加 Agent 弹窗 -->
+      <div class="modal-overlay" v-if="showAddAgent" @click.self="showAddAgent=false">
+        <div class="modal">
+          <div class="modal-title">添加 Agent</div>
+          <div class="form-group">
+            <label>类型</label>
+            <div class="form-tabs">
+              <span class="form-tab" :class="{active: newAgent.type==='remote'}" @click="newAgent.type='remote'">🌐 Remote</span>
+              <span class="form-tab" :class="{active: newAgent.type==='shell'}" @click="newAgent.type='shell'">💻 Shell</span>
+            </div>
+          </div>
+          <div class="form-group">
+            <label>名称</label>
+            <input class="form-input" v-model="newAgent.name" placeholder="如 MyReviewAgent" />
+          </div>
+          <div class="form-group" v-if="newAgent.type==='remote'">
+            <label>Endpoint</label>
+            <input class="form-input" v-model="newAgent.endpoint" placeholder="http://localhost:9001/run" />
+          </div>
+          <div class="form-group" v-if="newAgent.type==='remote'">
+            <label>Health Endpoint（可选）</label>
+            <input class="form-input" v-model="newAgent.health_endpoint" placeholder="http://localhost:9001/health" />
+          </div>
+          <div class="form-group" v-if="newAgent.type==='shell'">
+            <label>命令</label>
+            <input class="form-input" v-model="newAgent.command" placeholder="python3 -m pytest {workspace}" />
+          </div>
+          <div class="form-group">
+            <label>描述</label>
+            <input class="form-input" v-model="newAgent.description" placeholder="这个 Agent 做什么" />
+          </div>
+          <div class="form-group">
+            <label>类别</label>
+            <div class="select-chips">
+              <span class="chip" v-for="c in ['codegen','test','review','deploy','requirement','general']" :key="c"
+                    :class="{selected: newAgent.category===c}" @click="newAgent.category=c">
+                {{ categoryIcon(c) }} {{ c }}
+              </span>
+            </div>
+          </div>
+          <div class="form-actions">
+            <button class="btn btn-outline" @click="showAddAgent=false">取消</button>
+            <button class="btn btn-primary" @click="addAgent" :disabled="!newAgent.name">确认添加</button>
+          </div>
+          <div class="form-error" v-if="addAgentError">{{ addAgentError }}</div>
+        </div>
       </div>
       <div class="agent-grid">
         <div class="agent-card" v-for="a in agents" :key="a.name" :class="{'agent-disabled': !a.enabled}">
@@ -87,6 +158,8 @@
           <div class="agent-footer">
             <span class="agent-state" :class="'state-'+a.state">{{ a.state }}</span>
             <span class="agent-id">{{ a.id }}</span>
+            <button v-if="a.dynamic" class="btn btn-sm btn-danger" @click.stop="deleteAgent(a.name)"
+                    style="margin-left:auto; padding:2px 8px; font-size:11px">删除</button>
           </div>
         </div>
       </div>
@@ -140,6 +213,23 @@
             </div>
           </div>
           <div class="selected-order" v-if="selectedAgents.length">流程: {{ selectedAgents.join(' → ') }}</div>
+
+          <!-- 回退设置 -->
+          <div class="loop-config" v-if="selectedAgents.length >= 2">
+            <span class="select-label" style="margin-top:10px">失败回退设置（可选）：</span>
+            <div class="loop-row" v-for="(name, i) in selectedAgents" :key="name" v-show="i > 0">
+              <span class="loop-agent">{{ name }} 失败时</span>
+              <select class="loop-select" v-model="customLoopMap[name]">
+                <option value="">不回退（直接中止）</option>
+                <option v-for="prev in selectedAgents.slice(0, i)" :key="prev" :value="prev">
+                  回退到 {{ prev }}
+                </option>
+              </select>
+              <select class="loop-select loop-count" v-if="customLoopMap[name]" v-model="customLoopMax[name]">
+                <option v-for="n in [2,3,5,10]" :key="n" :value="n">最多 {{ n }} 次</option>
+              </select>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -217,6 +307,13 @@
       </div>
       <div class="empty" v-else>暂无历史记录</div>
 
+      <!-- 分页 -->
+      <div class="pagination" v-if="historyRuns.length >= historyPageSize">
+        <button class="btn btn-sm btn-outline" :disabled="historyPage===0" @click="historyPage--; loadHistory()">上一页</button>
+        <span class="page-info">第 {{ historyPage + 1 }} 页</span>
+        <button class="btn btn-sm btn-outline" :disabled="historyRuns.length < historyPageSize" @click="historyPage++; loadHistory()">下一页</button>
+      </div>
+
       <!-- Workspace 文件浏览器 -->
       <div class="workspace-panel" v-if="workspaceRunId">
         <div class="wp-header">
@@ -257,6 +354,8 @@
 
     <!-- ===== METRICS TAB ===== -->
     <div v-show="tab==='metrics'">
+      <!-- 总览卡片 -->
+      <div class="metrics-section-title">📊 总览</div>
       <div class="metrics-grid" v-if="metricsData">
         <div class="metric-card"><div class="mc-value">{{ metricsData.summary?.pipeline_runs_total || 0 }}</div><div class="mc-label">总执行</div></div>
         <div class="metric-card mc-ok"><div class="mc-value">{{ metricsData.summary?.pipeline_success || 0 }}</div><div class="mc-label">成功</div></div>
@@ -265,10 +364,56 @@
         <div class="metric-card"><div class="mc-value">{{ metricsData.summary?.avg_duration || 0 }}s</div><div class="mc-label">平均耗时</div></div>
         <div class="metric-card"><div class="mc-value">{{ metricsData.summary?.max_duration || 0 }}s</div><div class="mc-label">最长耗时</div></div>
       </div>
+
+      <!-- 最近运行趋势 -->
+      <div class="metrics-section-title" v-if="metricsData?.recent_runs?.length">📈 最近运行</div>
+      <div class="recent-runs" v-if="metricsData?.recent_runs?.length">
+        <div class="rr-bar" v-for="r in metricsData.recent_runs" :key="r.id"
+             :title="r.name + ' | ' + r.duration + 's'">
+          <div class="rr-fill" :class="r.success ? 'rr-ok' : 'rr-fail'"
+               :style="{height: Math.min(r.duration / (metricsData.summary?.max_duration || 1) * 100, 100) + '%'}">
+          </div>
+          <div class="rr-label">{{ r.id }}</div>
+        </div>
+      </div>
+
+      <!-- Agent 维度指标 -->
+      <div class="metrics-section-title" v-if="metricsData?.agent_stats">🤖 Agent 指标</div>
+      <div class="agent-metrics-table" v-if="metricsData?.agent_stats && Object.keys(metricsData.agent_stats).length">
+        <div class="amt-header">
+          <span class="amt-name">Agent</span>
+          <span class="amt-col">执行次数</span>
+          <span class="amt-col">成功</span>
+          <span class="amt-col">失败</span>
+          <span class="amt-col">成功率</span>
+          <span class="amt-col">平均耗时</span>
+        </div>
+        <div class="amt-row" v-for="(stats, name) in metricsData.agent_stats" :key="name">
+          <span class="amt-name">{{ name }}</span>
+          <span class="amt-col">{{ stats.runs }}</span>
+          <span class="amt-col" style="color:#4ade80">{{ stats.success }}</span>
+          <span class="amt-col" style="color:#f87171">{{ stats.failed }}</span>
+          <span class="amt-col">{{ stats.success_rate }}%</span>
+          <span class="amt-col">{{ stats.avg_duration }}s</span>
+        </div>
+      </div>
+
+      <!-- 调度器状态 -->
+      <div class="metrics-section-title" v-if="metricsData?.scheduler">⚙️ 调度器</div>
+      <div class="metrics-grid small" v-if="metricsData?.scheduler">
+        <div class="metric-card"><div class="mc-value">{{ metricsData.scheduler.queue_size }}</div><div class="mc-label">队列中</div></div>
+        <div class="metric-card"><div class="mc-value">{{ metricsData.scheduler.running_jobs }}</div><div class="mc-label">运行中</div></div>
+        <div class="metric-card"><div class="mc-value">{{ metricsData.scheduler.total_jobs }}</div><div class="mc-label">总任务</div></div>
+        <div class="metric-card"><div class="mc-value">{{ metricsData.scheduler.max_concurrent }}</div><div class="mc-label">最大并发</div></div>
+      </div>
+
+      <!-- 告警 -->
       <div class="alerts-section" v-if="alerts.length">
-        <h3 style="color:#f87171; margin:16px 0 8px">⚠️ 告警</h3>
+        <div class="metrics-section-title">⚠️ 告警</div>
         <div class="alert-item" v-for="a in alerts" :key="a.alert">{{ a.message }}</div>
       </div>
+
+      <div class="empty" v-if="!metricsData">加载中...</div>
     </div>
 
     <!-- ===== LOGS TAB ===== -->
@@ -315,6 +460,20 @@
   .health-dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; margin-left: 6px; vertical-align: middle; }
   .agent-health-warn { font-size: 12px; color: #fbbf24; background: #451a03; padding: 6px 10px; border-radius: 6px; margin-bottom: 8px; }
 
+  /* Modal */
+  .modal-overlay { position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.6); z-index: 500; display: flex; align-items: center; justify-content: center; }
+  .modal { background: #1e293b; border-radius: 12px; padding: 24px; width: 460px; max-width: 90vw; border: 1px solid #334155; }
+  .modal-title { font-size: 17px; font-weight: 700; margin-bottom: 16px; }
+  .form-group { margin-bottom: 14px; }
+  .form-group label { display: block; font-size: 12px; color: #94a3b8; margin-bottom: 5px; }
+  .form-input { width: 100%; padding: 8px 12px; border-radius: 7px; border: 1px solid #334155; background: #0f172a; color: #e2e8f0; font-size: 13px; outline: none; }
+  .form-input:focus { border-color: #3b82f6; }
+  .form-tabs { display: flex; gap: 6px; }
+  .form-tab { padding: 6px 14px; border-radius: 7px; font-size: 13px; cursor: pointer; background: #0f172a; border: 1px solid #334155; transition: all 0.15s; }
+  .form-tab.active { background: #1e3a5f; border-color: #3b82f6; color: #60a5fa; }
+  .form-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
+  .form-error { color: #f87171; font-size: 13px; margin-top: 10px; }
+
   /* Run Bar */
   .run-bar { display: flex; gap: 10px; margin-bottom: 14px; }
 
@@ -360,6 +519,14 @@
   .chip.disabled { opacity: 0.4; cursor: not-allowed; }
   .selected-order { font-size: 12px; color: #38bdf8; }
 
+  /* Loop Config */
+  .loop-config { margin-top: 6px; }
+  .loop-row { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
+  .loop-agent { font-size: 13px; color: #e2e8f0; min-width: 140px; }
+  .loop-select { padding: 5px 8px; border-radius: 6px; border: 1px solid #334155; background: #0f172a; color: #e2e8f0; font-size: 12px; outline: none; }
+  .loop-select:focus { border-color: #3b82f6; }
+  .loop-count { width: 100px; }
+
   /* DAG */
   .dag-container { margin-bottom: 16px; }
   .dag-svg { display: block; overflow: visible; }
@@ -400,6 +567,8 @@
   .hi-time { font-size: 12px; color: #64748b; margin-left: auto; }
   .hi-dur { font-size: 12px; color: #94a3b8; }
   .hi-error { font-size: 12px; color: #f87171; margin-top: 4px; }
+  .pagination { display: flex; align-items: center; justify-content: center; gap: 12px; margin: 14px 0; }
+  .page-info { font-size: 13px; color: #94a3b8; }
 
   /* Workspace Panel */
   .workspace-panel { background: #1e293b; border-radius: 10px; border: 1px solid #334155; overflow: hidden; }
@@ -424,6 +593,27 @@
   .metric-card { background: #1e293b; border-radius: 10px; padding: 18px; text-align: center; border: 1px solid #334155; }
   .mc-ok { border-color: #22c55e; } .mc-fail { border-color: #ef4444; }
   .mc-value { font-size: 26px; font-weight: 700; } .mc-label { font-size: 12px; color: #94a3b8; margin-top: 4px; }
+  .metrics-grid.small .metric-card { padding: 14px; }
+  .metrics-grid.small .mc-value { font-size: 20px; }
+  .metrics-section-title { font-size: 14px; font-weight: 600; color: #94a3b8; margin: 18px 0 10px; }
+  .metrics-section-title:first-child { margin-top: 0; }
+
+  /* Recent Runs Bar Chart */
+  .recent-runs { display: flex; gap: 6px; align-items: flex-end; height: 100px; background: #1e293b; border-radius: 10px; padding: 12px 14px 24px; margin-bottom: 4px; }
+  .rr-bar { flex: 1; display: flex; flex-direction: column; align-items: center; height: 100%; justify-content: flex-end; }
+  .rr-fill { width: 100%; min-height: 4px; border-radius: 4px 4px 0 0; transition: height 0.3s; }
+  .rr-ok { background: #22c55e; }
+  .rr-fail { background: #ef4444; }
+  .rr-label { font-size: 10px; color: #475569; margin-top: 4px; font-family: monospace; }
+
+  /* Agent Metrics Table */
+  .agent-metrics-table { background: #1e293b; border-radius: 10px; overflow: hidden; margin-bottom: 4px; }
+  .amt-header, .amt-row { display: grid; grid-template-columns: 1.5fr 1fr 1fr 1fr 1fr 1fr; padding: 8px 14px; font-size: 13px; }
+  .amt-header { background: #0f172a; color: #64748b; font-weight: 600; font-size: 12px; }
+  .amt-row { border-top: 1px solid #334155; }
+  .amt-row:hover { background: #334155; }
+  .amt-name { font-weight: 600; }
+  .amt-col { text-align: center; }
   .alerts-section { margin-top: 14px; }
   .alert-item { background: #450a0a; border: 1px solid #ef4444; border-radius: 7px; padding: 10px 14px; font-size: 13px; color: #fca5a5; margin-bottom: 6px; }
 
@@ -454,6 +644,8 @@ createApp({
     const events = ref([]);
     const agents = ref([]);
     const selectedAgents = ref([]);
+    const customLoopMap = ref({});   // { agentName: gotoAgentName }
+    const customLoopMax = ref({});   // { agentName: maxLoops }
     const prompt = ref('');
     const pipelineResult = ref(null);
     const steps = ref([]);
@@ -487,6 +679,8 @@ createApp({
       return '输入 prompt...';
     });
     const historyRuns = ref([]);
+    const historyPage = ref(0);
+    const historyPageSize = 20;
     const metricsData = ref(null);
     const alerts = ref([]);
     const workspaceRunId = ref(null);
@@ -497,7 +691,25 @@ createApp({
     const gitLog = ref([]);
     const logListEl = ref(null);
 
+    // ---- Toast 通知 ----
+    const toasts = ref([]);
+    let toastId = 0;
+    function showToast(message, type = 'error') {
+      const id = ++toastId;
+      toasts.value.push({ id, message, type });
+      setTimeout(() => removeToast(id), 5000);
+    }
+    function removeToast(id) {
+      toasts.value = toasts.value.filter(t => t.id !== id);
+    }
+
     const healthData = ref(null);
+    const showAddAgent = ref(false);
+    const addAgentError = ref('');
+    const newAgent = ref({
+      type: 'remote', name: '', endpoint: '', health_endpoint: '',
+      command: '', description: '', category: 'general',
+    });
     const healthyCount = computed(() => {
       if (!healthData.value) return 0;
       return Object.values(healthData.value).filter(v => v.healthy).length;
@@ -525,6 +737,55 @@ createApp({
         healthData.value = null;
       }
     }
+
+    async function addAgent() {
+      addAgentError.value = '';
+      const body = {
+        name: newAgent.value.name,
+        type: newAgent.value.type,
+        description: newAgent.value.description,
+        category: newAgent.value.category,
+      };
+      if (newAgent.value.type === 'remote') {
+        body.endpoint = newAgent.value.endpoint;
+        body.health_endpoint = newAgent.value.health_endpoint || undefined;
+      } else {
+        body.command = newAgent.value.command;
+      }
+      try {
+        const res = await fetch('/api/agents', {
+          method: 'POST', headers: {'Content-Type':'application/json'},
+          body: JSON.stringify(body),
+        });
+        const data = await res.json();
+        if (data.error) {
+          addAgentError.value = data.error;
+          return;
+        }
+        showAddAgent.value = false;
+        newAgent.value = { type: 'remote', name: '', endpoint: '', health_endpoint: '', command: '', description: '', category: 'general' };
+        showToast(`Agent ${body.name} 已添加`, 'success');
+        loadAgents();
+      } catch (e) {
+        addAgentError.value = e.message;
+      }
+    }
+
+    async function deleteAgent(name) {
+      if (!confirm(`确定删除 Agent "${name}"？`)) return;
+      try {
+        const res = await fetch(`/api/agents/${name}`, { method: 'DELETE' });
+        const data = await res.json();
+        if (data.error) {
+          showToast(data.error, 'error');
+          return;
+        }
+        showToast(`Agent ${name} 已删除`, 'success');
+        loadAgents();
+      } catch (e) {
+        showToast(e.message, 'error');
+      }
+    }
     async function toggleAgent(a) {
       const enabled = !a.enabled;
       await fetch(`/api/agents/${a.name}/toggle`, { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify({enabled}) });
@@ -549,6 +810,11 @@ createApp({
         const ev = JSON.parse(msg.data);
         events.value.push(ev);
         handleEvent(ev);
+        // agent 不可用告警
+        if (ev.type === 'agent_unhealthy') {
+          showToast(`Agent ${ev.agent} 不可用，请检查服务`, 'warning');
+          checkHealth();
+        }
         // 自动滚动日志
         if (tab.value === 'logs') nextTick(() => {
           if (logListEl.value) logListEl.value.scrollTop = logListEl.value.scrollHeight;
@@ -722,6 +988,18 @@ createApp({
         }));
         url = '/api/run';
         body = { agents: agentList, prompt: prompt.value };
+        // 传递回退配置
+        const loopMap = {};
+        const loopMax = {};
+        Object.entries(customLoopMap.value).forEach(([k, v]) => {
+          if (v && agentList && agentList.includes(k)) { loopMap[k] = v; loopMax[k] = customLoopMax.value[k] || 3; }
+        });
+        if (Object.keys(loopMap).length) {
+          body.loop_map = loopMap;
+          body.loop_max = loopMax;
+          // 同步到 DAG 回退线
+          pipelineLoopMap.value = loopMap;
+        }
       }
 
       try {
@@ -747,17 +1025,23 @@ createApp({
         }
       } catch (e) {
         pipelineResult.value = { success: false, error: e.message };
+        showToast(`Pipeline 执行失败: ${e.message}`, 'error');
       }
       running.value = false;
       loadAgents();
       if (pipelineResult.value?.workspace_id) {
         latestWorkspaceId.value = pipelineResult.value.workspace_id;
       }
+      if (pipelineResult.value?.error) {
+        showToast(pipelineResult.value.error, 'error');
+      } else if (pipelineResult.value?.success) {
+        showToast('Pipeline 执行成功', 'success');
+      }
     }
 
     // ---- History ----
     async function loadHistory() {
-      const res = await fetch('/api/history');
+      const res = await fetch(`/api/history?limit=${historyPageSize}&offset=${historyPage.value * historyPageSize}`);
       historyRuns.value = await res.json();
     }
 
@@ -808,15 +1092,15 @@ createApp({
     onMounted(() => { loadAgents(); connectWS(); });
 
     return {
-      tab, running, wsConnected, events, agents, selectedAgents, prompt,
+      tab, running, wsConnected, events, agents, selectedAgents, customLoopMap, customLoopMax, prompt,
       pipelineResult, steps, selectedStepIndex, selectedStepData,
       pipelineMode, pipelineConfigs, selectedPipeline, selectedPipelineConfig, pipelineLoopMap,
       dagNodes, dagEdges, dagWidth, dagHeight,
-      historyRuns, metricsData, alerts,
-      healthData, healthyCount,
+      historyRuns, historyPage, historyPageSize, metricsData, alerts,
+      healthData, healthyCount, showAddAgent, newAgent, addAgentError,
       workspaceRunId, latestWorkspaceId, workspaceFiles, selectedFile, fileContent, gitLog,
-      logListEl,
-      loadAgents, toggleAgent, toggleSelect, categoryIcon, checkHealth, getAgentCategory, selectPipeline, promptPlaceholder,
+      logListEl, toasts, showToast, removeToast,
+      loadAgents, toggleAgent, toggleSelect, categoryIcon, checkHealth, addAgent, deleteAgent, getAgentCategory, selectPipeline, promptPlaceholder,
       runPipeline, selectStep,
       loadHistory, openWorkspace, loadFile, fileIcon, formatSize,
       loadMetrics, formatTime, formatTimestamp,

@@ -85,6 +85,19 @@ def init_db() -> None:
             context_json TEXT NOT NULL,
             created_at REAL NOT NULL
         );
+
+        CREATE TABLE IF NOT EXISTS dynamic_agents (
+            name TEXT PRIMARY KEY,
+            type TEXT NOT NULL,
+            endpoint TEXT,
+            health_endpoint TEXT,
+            command TEXT,
+            description TEXT DEFAULT '',
+            category TEXT DEFAULT 'general',
+            timeout REAL DEFAULT 120.0,
+            enabled INTEGER DEFAULT 1,
+            created_at REAL NOT NULL
+        );
     """)
 
 
@@ -129,10 +142,10 @@ class Store:
         )
         conn.commit()
 
-    def list_runs(self, limit: int = 50) -> list[dict]:
+    def list_runs(self, limit: int = 50, offset: int = 0) -> list[dict]:
         conn = _get_conn()
         rows = conn.execute(
-            "SELECT * FROM pipeline_runs ORDER BY started_at DESC LIMIT ?", (limit,)
+            "SELECT * FROM pipeline_runs ORDER BY started_at DESC LIMIT ? OFFSET ?", (limit, offset)
         ).fetchall()
         return [dict(r) for r in rows]
 
@@ -178,3 +191,49 @@ class Store:
         conn = _get_conn()
         conn.execute("DELETE FROM checkpoints WHERE pipeline_id=?", (pipeline_id,))
         conn.commit()
+
+    # --- Jobs ---
+    def save_job(self, job_id: str, pipeline_name: str, prompt: str, status: str = "queued") -> None:
+        conn = _get_conn()
+        conn.execute(
+            "INSERT OR REPLACE INTO jobs (id, pipeline_name, prompt, status, created_at) VALUES (?, ?, ?, ?, ?)",
+            (job_id, pipeline_name, prompt, status, time.time()),
+        )
+        conn.commit()
+
+    def update_job(self, job_id: str, status: str, error: str | None = None) -> None:
+        conn = _get_conn()
+        if status == "running":
+            conn.execute("UPDATE jobs SET status=?, started_at=? WHERE id=?", (status, time.time(), job_id))
+        elif status in ("completed", "failed"):
+            conn.execute("UPDATE jobs SET status=?, error=?, finished_at=? WHERE id=?", (status, error, time.time(), job_id))
+        else:
+            conn.execute("UPDATE jobs SET status=? WHERE id=?", (status, job_id))
+        conn.commit()
+
+    def list_jobs(self, limit: int = 50) -> list[dict]:
+        conn = _get_conn()
+        rows = conn.execute("SELECT * FROM jobs ORDER BY created_at DESC LIMIT ?", (limit,)).fetchall()
+        return [dict(r) for r in rows]
+
+    # --- Dynamic Agents ---
+    def save_dynamic_agent(self, name: str, agent_type: str, endpoint: str | None,
+                           health_endpoint: str | None, command: str | None,
+                           description: str, category: str, timeout: float) -> None:
+        conn = _get_conn()
+        conn.execute(
+            "INSERT OR REPLACE INTO dynamic_agents (name, type, endpoint, health_endpoint, command, description, category, timeout, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (name, agent_type, endpoint, health_endpoint, command, description, category, timeout, time.time()),
+        )
+        conn.commit()
+
+    def delete_dynamic_agent(self, name: str) -> bool:
+        conn = _get_conn()
+        cur = conn.execute("DELETE FROM dynamic_agents WHERE name=?", (name,))
+        conn.commit()
+        return cur.rowcount > 0
+
+    def list_dynamic_agents(self) -> list[dict]:
+        conn = _get_conn()
+        rows = conn.execute("SELECT * FROM dynamic_agents WHERE enabled=1").fetchall()
+        return [dict(r) for r in rows]

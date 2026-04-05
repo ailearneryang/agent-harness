@@ -22,10 +22,11 @@ class AgentMeta:
             "name": self.name,
             "description": self.description,
             "category": self.category,
-            "config": self.config,
+            "config": {k: v for k, v in self.config.items() if not k.startswith("_")},
             "enabled": self.enabled,
             "state": self.agent.state.value,
             "id": self.agent.id,
+            "dynamic": bool(self.config.get("_dynamic")),
         }
 
 

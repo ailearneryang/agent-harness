@@ -92,6 +92,12 @@ class Scheduler:
         )
         self._jobs[job.id] = job
         self._queue.put_nowait(job)
+        # 持久化
+        try:
+            from agent_harness.store import Store
+            Store().save_job(job.id, pipeline_name, prompt)
+        except Exception:
+            pass
         logger.info("Job %s queued: %s", job.id, pipeline_name)
         return job
 
@@ -123,6 +129,7 @@ class Scheduler:
             job.status = "running"
             job.started_at = time.time()
             logger.info("Job %s started", job.id)
+            self._persist_job(job.id, "running")
 
             try:
                 if self._execute_fn:
@@ -139,4 +146,12 @@ class Scheduler:
                 logger.error("Job %s failed: %s", job.id, e)
             finally:
                 job.finished_at = time.time()
+                self._persist_job(job.id, job.status, job.error)
                 logger.info("Job %s finished: %s", job.id, job.status)
+
+    def _persist_job(self, job_id: str, status: str, error: str | None = None):
+        try:
+            from agent_harness.store import Store
+            Store().update_job(job_id, status, error)
+        except Exception:
+            pass

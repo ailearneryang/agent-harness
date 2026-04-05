@@ -122,6 +122,29 @@ def init_default_agents():
 init_default_agents()
 
 
+# 从 DB 恢复动态注册的 agent
+def _restore_dynamic_agents():
+    _store = Store()
+    for row in _store.list_dynamic_agents():
+        if registry.get(row["name"]):
+            continue
+        if row["type"] == "remote":
+            from agent_harness.agents.remote import RemoteAgent
+            agent = RemoteAgent(
+                name=row["name"], endpoint=row["endpoint"] or "",
+                health_endpoint=row["health_endpoint"], timeout=row["timeout"] or 120.0,
+            )
+        elif row["type"] == "shell":
+            from agent_harness.agents.remote import ShellAgent
+            agent = ShellAgent(name=row["name"], command=row["command"] or "", timeout=row["timeout"] or 120.0)
+        else:
+            continue
+        meta = registry.register(agent, description=row["description"] or "", category=row["category"] or "general")
+        meta.config["_dynamic"] = True
+
+_restore_dynamic_agents()
+
+
 # --- FastAPI App ---
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -138,6 +161,9 @@ async def lifespan(app: FastAPI):
     scheduler.set_executor(_execute_job)
     await scheduler.start()
     cleanup_task = asyncio.create_task(cleanup_loop(interval_minutes=30, max_age_hours=24, max_count=50))
+
+    # 后台定时健康检查
+    health_check_task = asyncio.create_task(_health_check_loop())
 
     # 配置热重载：监听 agents.yaml 变化
     hot_reload_task = asyncio.create_task(_watch_agents_config())
@@ -162,6 +188,7 @@ async def lifespan(app: FastAPI):
     logging.getLogger("agent_harness").info("Shutting down gracefully...")
     cleanup_task.cancel()
     hot_reload_task.cancel()
+    health_check_task.cancel()
     await scheduler.stop()
     logging.getLogger("agent_harness").info("Shutdown complete.")
 
@@ -251,10 +278,68 @@ async def update_agent_config(name: str, body: AgentConfig):
     return {"name": name, "config": body.config}
 
 
+class RegisterAgentRequest(BaseModel):
+    name: str
+    type: str = "remote"  # remote 或 shell
+    endpoint: str | None = None  # remote 类型必填
+    health_endpoint: str | None = None
+    command: str | None = None  # shell 类型必填
+    description: str = ""
+    category: str = "general"
+    timeout: float = 120.0
+
+@app.post("/api/agents", dependencies=[Depends(verify_token)])
+async def register_agent(body: RegisterAgentRequest):
+    """动态注册 Remote 或 Shell Agent，持久化到 DB"""
+    if registry.get(body.name):
+        return {"error": f"Agent '{body.name}' 已存在"}
+
+    if body.type == "remote":
+        if not body.endpoint:
+            return {"error": "Remote agent 需要提供 endpoint"}
+        from agent_harness.agents.remote import RemoteAgent
+        agent = RemoteAgent(
+            name=body.name, endpoint=body.endpoint,
+            health_endpoint=body.health_endpoint, timeout=body.timeout,
+        )
+    elif body.type == "shell":
+        if not body.command:
+            return {"error": "Shell agent 需要提供 command"}
+        from agent_harness.agents.remote import ShellAgent
+        agent = ShellAgent(name=body.name, command=body.command, timeout=body.timeout)
+    else:
+        return {"error": f"不支持的类型: {body.type}，仅支持 remote 和 shell"}
+
+    meta = registry.register(agent, description=body.description, category=body.category)
+    meta.config["_dynamic"] = True  # 标记为动态注册
+
+    # 持久化
+    store.save_dynamic_agent(
+        body.name, body.type, body.endpoint, body.health_endpoint,
+        body.command, body.description, body.category, body.timeout,
+    )
+    return {"registered": body.name, "type": body.type}
+
+
+@app.delete("/api/agents/{name}", dependencies=[Depends(verify_token)])
+async def delete_agent(name: str):
+    """删除动态注册的 Agent（YAML 里的不能删）"""
+    meta = registry.get_meta(name)
+    if not meta:
+        return {"error": f"Agent '{name}' not found"}
+    if not meta.config.get("_dynamic"):
+        return {"error": f"Agent '{name}' 是系统内置的，不能从页面删除"}
+    registry.unregister(name)
+    store.delete_dynamic_agent(name)
+    return {"deleted": name}
+
+
 # --- Pipeline 执行 API ---
 class RunRequest(BaseModel):
-    agents: list[str] | None = None  # 指定 agent 名称列表，None 则用默认流程
-    prompt: str = "实现一个加法函数"
+    agents: list[str] | None = None
+    prompt: str = ""
+    loop_map: dict[str, str] | None = None   # { agentName: gotoAgentName }
+    loop_max: dict[str, int] | None = None   # { agentName: maxLoops }
 
 
 class ABTestRequest(BaseModel):
@@ -305,14 +390,12 @@ async def run_pipeline(body: RunRequest | None = None):
         if not agents:
             return {"error": "没有找到可用的 agent"}
         pipeline = Pipeline(name="custom-pipeline")
-        # 自动检测：如果有 test 类 agent，失败时回退到前面最近的 codegen agent
-        codegen_name = None
+        loop_map = (body.loop_map or {}) if body else {}
+        loop_max = (body.loop_max or {}) if body else {}
         for agent in agents:
-            meta = registry.get_meta(agent.name)
-            if meta and meta.category == "codegen":
-                codegen_name = agent.name
-            on_fail_goto = codegen_name if (meta and meta.category == "test" and codegen_name) else None
-            pipeline.add(agent, on_fail_goto=on_fail_goto, max_loops=3)
+            on_fail_goto = loop_map.get(agent.name)
+            max_loops = loop_max.get(agent.name, 3)
+            pipeline.add(agent, on_fail_goto=on_fail_goto, max_loops=max_loops)
     else:
         pipeline = _default_pipeline()
 
@@ -349,6 +432,57 @@ async def run_pipeline(body: RunRequest | None = None):
         ],
         "error": result.error,
     }
+
+
+async def _health_check_loop():
+    """后台定时健康检查，agent 不可用时主动告警"""
+    _prev_status: dict[str, bool] = {}
+    while True:
+        await asyncio.sleep(30)  # 每 30 秒检查一次
+        try:
+            for meta in registry.list_all():
+                try:
+                    healthy = await meta.agent.health_check()
+                except Exception:
+                    healthy = False
+
+                prev = _prev_status.get(meta.name, True)
+                _prev_status[meta.name] = healthy
+
+                # 状态变化时告警
+                if prev and not healthy:
+                    logging.getLogger("agent_harness").warning(
+                        "Agent %s 健康检查失败，服务不可用", meta.name
+                    )
+                    asyncio.create_task(notifier.notify("agent_unhealthy", {
+                        "agent": meta.name, "category": meta.category,
+                        "message": f"Agent {meta.name} 不可用",
+                    }))
+                    # 推送到 WebSocket
+                    asyncio.create_task(monitor._broadcast({
+                        "type": "agent_unhealthy", "agent": meta.name,
+                        "ts": __import__("time").time(),
+                    }))
+                elif not prev and healthy:
+                    logging.getLogger("agent_harness").info(
+                        "Agent %s 已恢复", meta.name
+                    )
+                    asyncio.create_task(notifier.notify("agent_recovered", {
+                        "agent": meta.name, "message": f"Agent {meta.name} 已恢复",
+                    }))
+        except Exception as e:
+            logging.getLogger("agent_harness").error("Health check loop error: %s", e)
+
+        # 同时检查指标告警
+        try:
+            fired = metrics.check_alerts()
+            for alert in fired:
+                asyncio.create_task(notifier.notify("alert_fired", alert))
+                asyncio.create_task(monitor._broadcast({
+                    "type": "alert_fired", "ts": __import__("time").time(), **alert,
+                }))
+        except Exception:
+            pass
 
 
 async def _watch_agents_config():
@@ -507,8 +641,8 @@ async def run_yaml_pipeline(body: RunYamlRequest):
 store = Store()
 
 @app.get("/api/history")
-async def list_history(limit: int = 50):
-    return store.list_runs(limit)
+async def list_history(limit: int = 20, offset: int = 0):
+    return store.list_runs(limit=limit, offset=offset)
 
 
 @app.get("/api/history/compare")
@@ -546,11 +680,61 @@ async def get_history(pipeline_id: str):
 async def get_metrics():
     snapshot = metrics.snapshot()
     summary = metrics.compute_from_store(store)
-    return {**snapshot, "summary": summary}
+
+    # Agent 维度指标
+    agent_stats = {}
+    runs = store.list_runs(limit=200)
+    for run in runs:
+        run_detail = store.get_run(run["id"])
+        if not run_detail:
+            continue
+        for step in run_detail.get("steps", []):
+            name = step["agent_name"]
+            if name not in agent_stats:
+                agent_stats[name] = {"runs": 0, "success": 0, "failed": 0, "total_duration": 0}
+            agent_stats[name]["runs"] += 1
+            if step.get("success"):
+                agent_stats[name]["success"] += 1
+            else:
+                agent_stats[name]["failed"] += 1
+            agent_stats[name]["total_duration"] += step.get("duration") or 0
+    for name, s in agent_stats.items():
+        s["avg_duration"] = round(s["total_duration"] / s["runs"], 2) if s["runs"] > 0 else 0
+        s["success_rate"] = round(s["success"] / s["runs"] * 100, 1) if s["runs"] > 0 else 0
+
+    # 最近 10 次运行趋势
+    recent = []
+    for r in runs[:10]:
+        recent.append({
+            "id": r["id"][:8],
+            "success": bool(r.get("success")),
+            "duration": round((r.get("finished_at") or 0) - (r.get("started_at") or 0), 1),
+            "name": r.get("name", ""),
+        })
+
+    # 调度器状态
+    sched = {
+        "queue_size": scheduler.queue_size,
+        "max_concurrent": scheduler.max_concurrent,
+        "total_jobs": len(scheduler._jobs),
+        "running_jobs": sum(1 for j in scheduler._jobs.values() if j.status == "running"),
+    }
+
+    return {
+        **snapshot,
+        "summary": summary,
+        "agent_stats": agent_stats,
+        "recent_runs": recent,
+        "scheduler": sched,
+    }
 
 @app.get("/api/alerts")
 async def get_alerts():
-    return metrics.check_alerts()
+    fired = metrics.check_alerts()
+    # 主动推送告警到 webhook
+    for alert in fired:
+        asyncio.create_task(notifier.notify("alert_fired", alert))
+    return fired
 
 
 # --- 调度 API ---
@@ -592,19 +776,37 @@ async def cancel_pipeline(pipeline_id: str):
 
 @app.post("/api/resume/{pipeline_id}", dependencies=[Depends(verify_token)])
 async def resume_pipeline(pipeline_id: str):
-    """从断点续跑失败的 pipeline"""
+    """从断点续跑失败的 pipeline，恢复原始 pipeline 配置和 workspace"""
     checkpoint = store.get_checkpoint(pipeline_id)
     if not checkpoint:
         return {"error": "没有找到断点，该 pipeline 可能已成功完成或未保存断点"}
 
-    pipeline = _default_pipeline()
-    ctx = _create_isolated_ctx()
+    # 根据 checkpoint 里的 pipeline_name 恢复正确的 pipeline
+    pipeline_name = checkpoint["context"].get("pipeline_name", "")
+    pipeline_dir = Path("pipelines")
+    pipeline = None
+
+    # 尝试从 YAML 配置恢复
+    for f in pipeline_dir.glob("*.yaml"):
+        cfg = load_pipeline_config(f)
+        if cfg.get("name") == pipeline_name:
+            import copy as _copy
+            local_registry = _copy.deepcopy(registry)
+            pipeline = build_pipeline_from_config(cfg, local_registry)
+            break
+
+    if not pipeline:
+        pipeline = _default_pipeline()
+
+    # 不创建新 workspace，harness.run 会从 checkpoint 恢复原始 workspace
+    ctx = AgentContext()
 
     result = await harness_instance.run(pipeline, ctx, resume_from=pipeline_id)
     return {
         "pipeline_id": result.pipeline_id,
         "success": result.success,
         "resumed_from": pipeline_id,
+        "workspace_id": ctx.get("_workspace_id", ""),
         "error": result.error,
     }
 
