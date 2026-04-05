@@ -38,11 +38,26 @@ class Harness:
         self.monitor = monitor or ConsoleMonitor()
         self.store = Store()
         self.metrics = metrics or MetricsCollector()
-        self._cancelled: set[str] = set()  # pipeline_id 集合
+        self._cancelled: set[str] = set()
+        self._approvals: dict[str, asyncio.Event] = {}
+        self._approval_results: dict[str, bool] = {}
 
     def cancel(self, pipeline_id: str) -> None:
         """从外部取消正在运行的 pipeline"""
         self._cancelled.add(pipeline_id)
+
+    def approve(self, pipeline_id: str, approved: bool = True) -> bool:
+        """人工审批：通过或拒绝"""
+        event = self._approvals.get(pipeline_id)
+        if not event:
+            return False
+        self._approval_results[pipeline_id] = approved
+        event.set()
+        return True
+
+    def get_pending_approvals(self) -> list[dict]:
+        """获取等待审批的 pipeline"""
+        return [{"pipeline_id": pid} for pid, ev in self._approvals.items() if not ev.is_set()]
 
     async def run(
         self,
@@ -93,6 +108,30 @@ class Harness:
 
             step = pipeline.steps[i]
             ctx.step_index = i
+
+            # 人工审批节点
+            if step.approval:
+                msg = step.approval_message or f"Pipeline 等待审批（step {i}: {step.agent.name}）"
+                self.monitor.emit("approval_waiting", step.agent, i, pipeline_id, message=msg)
+                event = asyncio.Event()
+                self._approvals[pipeline_id] = event
+                # 等待人工操作（最长 24 小时）
+                try:
+                    await asyncio.wait_for(event.wait(), timeout=86400)
+                except asyncio.TimeoutError:
+                    self._approvals.pop(pipeline_id, None)
+                    result.success = False
+                    result.error = "审批超时（24小时未响应）"
+                    self.monitor.emit("approval_timeout", step.agent, i, pipeline_id)
+                    break
+                self._approvals.pop(pipeline_id, None)
+                approved = self._approval_results.pop(pipeline_id, False)
+                if not approved:
+                    result.success = False
+                    result.error = "审批被拒绝"
+                    self.monitor.emit("approval_rejected", step.agent, i, pipeline_id)
+                    break
+                self.monitor.emit("approval_approved", step.agent, i, pipeline_id)
 
             # 并行步骤组
             if step.parallel:
@@ -227,6 +266,9 @@ class Harness:
                 duration=last_result.duration, error=last_result.error,
             )
             self.metrics.observe("agent_duration_seconds", last_result.duration, agent=agent.name)
+            if last_result.tokens_used > 0:
+                self.metrics.inc("tokens_total", last_result.tokens_used, agent=agent.name)
+                self.metrics.inc("cost_total", last_result.estimated_cost, agent=agent.name)
 
             if last_result.success:
                 return last_result

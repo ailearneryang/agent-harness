@@ -31,6 +31,8 @@ class RunResponse(BaseModel):
     success: bool
     data: dict | None = None
     error: str | None = None
+    tokens_used: int = 0
+    estimated_cost: float = 0.0
 
 
 @app.get("/health")
@@ -84,15 +86,25 @@ async def _run_llm(prompt: str, last_error: str | None, loop_count: int, workspa
                 },
             )
             resp.raise_for_status()
-            content = resp.json()["choices"][0]["message"]["content"]
+            resp_data = resp.json()
+            content = resp_data["choices"][0]["message"]["content"]
+            # 兼容不同 LLM API 的 usage 格式
+            usage = resp_data.get("usage", {})
+            tokens = (
+                usage.get("total_tokens", 0)
+                or usage.get("totalTokens", 0)
+                or (usage.get("prompt_tokens", 0) + usage.get("completion_tokens", 0))
+            )
+            print(f"[RequirementGen] tokens={tokens}, usage={usage}")
     except Exception as e:
         return RunResponse(success=False, error=f"LLM 调用失败: {e}")
 
-    # 写入 workspace
     _write_to_workspace(workspace, "requirement.md", content)
 
     return RunResponse(
         success=True,
+        tokens_used=tokens,
+        estimated_cost=round(tokens * 0.0001 / 1000, 6),
         data={
             "file": "requirement.md",
             "action": "fix" if last_error else "create",
@@ -140,8 +152,13 @@ def _run_mock(prompt: str, last_error: str | None, loop_count: int, workspace: s
 
     _write_to_workspace(workspace, "requirement.md", content)
 
+    # 模拟 token 消耗
+    mock_tokens = len(content) * 2  # 粗略估算：字符数 * 2
+
     return RunResponse(
         success=True,
+        tokens_used=mock_tokens,
+        estimated_cost=round(mock_tokens * 0.0001 / 1000, 6),
         data={
             "file": "requirement.md",
             "action": "fix" if last_error else "create",

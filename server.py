@@ -578,6 +578,7 @@ async def list_pipelines():
                     "on_fail_goto": s.get("on_fail_goto"),
                     "max_loops": s.get("max_loops", 3),
                     "condition": s.get("condition"),
+                    "approval": s.get("approval", False),
                 })
         configs.append({
             "file": f.name,
@@ -726,6 +727,10 @@ async def get_metrics():
         "agent_stats": agent_stats,
         "recent_runs": recent,
         "scheduler": sched,
+        "cost": {
+            "total_tokens": sum(v for k, v in snapshot.get("counters", {}).items() if "tokens_total" in k),
+            "total_cost": round(sum(v for k, v in snapshot.get("counters", {}).items() if "cost_total" in k), 6),
+        },
     }
 
 @app.get("/api/alerts")
@@ -772,6 +777,37 @@ async def scheduler_status():
 async def cancel_pipeline(pipeline_id: str):
     harness_instance.cancel(pipeline_id)
     return {"cancelled": pipeline_id}
+
+
+# --- 人工审批 API ---
+@app.get("/api/approvals")
+async def list_approvals():
+    return harness_instance.get_pending_approvals()
+
+@app.post("/api/approve/{pipeline_id}")
+async def approve_pipeline(pipeline_id: str, approved: bool = True):
+    ok = harness_instance.approve(pipeline_id, approved)
+    if not ok:
+        return {"error": "没有找到等待审批的 pipeline"}
+    return {"pipeline_id": pipeline_id, "approved": approved}
+
+
+# --- Pipeline 版本管理 API ---
+@app.get("/api/pipelines/{name}/versions")
+async def list_pipeline_versions(name: str):
+    return store.list_pipeline_versions(name)
+
+@app.post("/api/pipelines/{name}/versions", dependencies=[Depends(verify_token)])
+async def save_pipeline_version(name: str, version: str):
+    """保存当前 pipeline YAML 为指定版本"""
+    pipeline_dir = Path("pipelines")
+    for f in pipeline_dir.glob("*.yaml"):
+        cfg = load_pipeline_config(f)
+        if cfg.get("name") == name:
+            config_yaml = f.read_text()
+            store.save_pipeline_version(name, version, config_yaml)
+            return {"name": name, "version": version}
+    return {"error": f"Pipeline '{name}' not found"}
 
 
 @app.post("/api/resume/{pipeline_id}", dependencies=[Depends(verify_token)])

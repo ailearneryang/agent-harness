@@ -78,6 +78,8 @@ class RemoteAgent(Agent):
             success=data.get("success", False),
             data=data.get("data"),
             error=data.get("error"),
+            tokens_used=data.get("tokens_used", 0),
+            estimated_cost=data.get("estimated_cost", 0.0),
         )
 
 

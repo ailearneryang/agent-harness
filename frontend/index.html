@@ -287,6 +287,16 @@
           📥 下载结果
         </a>
       </div>
+
+      <!-- 审批面板 -->
+      <div class="approval-panel" v-if="pendingApprovals.length">
+        <div class="ap-title">⏸ 等待审批</div>
+        <div class="ap-item" v-for="a in pendingApprovals" :key="a.pipeline_id">
+          <span class="ap-id">Pipeline {{ a.pipeline_id.slice(0,8) }}</span>
+          <button class="btn btn-sm" style="background:#22c55e; color:#fff" @click="doApprove(a.pipeline_id, true)">✅ 通过</button>
+          <button class="btn btn-sm btn-danger" @click="doApprove(a.pipeline_id, false)">❌ 拒绝</button>
+        </div>
+      </div>
     </div>
 
     <!-- ===== HISTORY TAB ===== -->
@@ -400,6 +410,14 @@
 
       <!-- 调度器状态 -->
       <div class="metrics-section-title" v-if="metricsData?.scheduler">⚙️ 调度器</div>
+
+      <!-- 成本追踪 -->
+      <div class="metrics-section-title" v-if="metricsData">💰 成本追踪</div>
+      <div class="metrics-grid small" v-if="metricsData">
+        <div class="metric-card"><div class="mc-value">{{ costData.totalTokens.toLocaleString() }}</div><div class="mc-label">总 Token</div></div>
+        <div class="metric-card"><div class="mc-value">${{ costData.totalCost.toFixed(4) }}</div><div class="mc-label">总费用（估算）</div></div>
+      </div>
+
       <div class="metrics-grid small" v-if="metricsData?.scheduler">
         <div class="metric-card"><div class="mc-value">{{ metricsData.scheduler.queue_size }}</div><div class="mc-label">队列中</div></div>
         <div class="metric-card"><div class="mc-value">{{ metricsData.scheduler.running_jobs }}</div><div class="mc-label">运行中</div></div>
@@ -551,6 +569,12 @@
   .result-ok { background: #14532d; border: 1px solid #22c55e; }
   .result-fail { background: #450a0a; border: 1px solid #ef4444; }
   .download-btn { margin-left: 12px; text-decoration: none; display: inline-block; vertical-align: middle; }
+
+  /* Approval */
+  .approval-panel { background: #451a03; border: 1px solid #f59e0b; border-radius: 10px; padding: 14px 18px; margin-top: 12px; }
+  .ap-title { font-size: 14px; font-weight: 600; color: #fbbf24; margin-bottom: 10px; }
+  .ap-item { display: flex; align-items: center; gap: 10px; padding: 6px 0; }
+  .ap-id { font-size: 13px; font-family: monospace; flex: 1; }
 </style>
 
 <style>
@@ -683,6 +707,24 @@ createApp({
     const historyPageSize = 20;
     const metricsData = ref(null);
     const alerts = ref([]);
+    const pendingApprovals = ref([]);
+
+    const costData = computed(() => {
+      if (!metricsData.value) return { totalTokens: 0, totalCost: 0 };
+      // 优先从 cost 字段读
+      if (metricsData.value.cost) {
+        return {
+          totalTokens: metricsData.value.cost.total_tokens || 0,
+          totalCost: metricsData.value.cost.total_cost || 0,
+        };
+      }
+      let totalTokens = 0, totalCost = 0;
+      Object.entries(metricsData.value.counters || {}).forEach(([k, v]) => {
+        if (k.startsWith('tokens_total')) totalTokens += v;
+        if (k.startsWith('cost_total')) totalCost += v;
+      });
+      return { totalTokens, totalCost };
+    });
     const workspaceRunId = ref(null);
     const latestWorkspaceId = ref(null);
     const workspaceFiles = ref([]);
@@ -814,6 +856,10 @@ createApp({
         if (ev.type === 'agent_unhealthy') {
           showToast(`Agent ${ev.agent} 不可用，请检查服务`, 'warning');
           checkHealth();
+        }
+        if (ev.type === 'approval_waiting') {
+          showToast(`Pipeline ${ev.pipeline?.slice(0,8)} 等待审批`, 'warning');
+          loadMetrics();
         }
         // 自动滚动日志
         if (tab.value === 'logs') nextTick(() => {
@@ -1080,9 +1126,18 @@ createApp({
 
     // ---- Metrics ----
     async function loadMetrics() {
-      const [mRes, aRes] = await Promise.all([fetch('/api/metrics'), fetch('/api/alerts')]);
+      const [mRes, aRes, apRes] = await Promise.all([
+        fetch('/api/metrics'), fetch('/api/alerts'), fetch('/api/approvals'),
+      ]);
       metricsData.value = await mRes.json();
       alerts.value = await aRes.json();
+      pendingApprovals.value = await apRes.json();
+    }
+
+    async function doApprove(pipelineId, approved) {
+      await fetch(`/api/approve/${pipelineId}?approved=${approved}`, { method: 'POST' });
+      showToast(approved ? '已通过审批' : '已拒绝', approved ? 'success' : 'warning');
+      pendingApprovals.value = pendingApprovals.value.filter(a => a.pipeline_id !== pipelineId);
     }
 
     // ---- Utils ----
@@ -1096,14 +1151,14 @@ createApp({
       pipelineResult, steps, selectedStepIndex, selectedStepData,
       pipelineMode, pipelineConfigs, selectedPipeline, selectedPipelineConfig, pipelineLoopMap,
       dagNodes, dagEdges, dagWidth, dagHeight,
-      historyRuns, historyPage, historyPageSize, metricsData, alerts,
+      historyRuns, historyPage, historyPageSize, metricsData, alerts, pendingApprovals, costData,
       healthData, healthyCount, showAddAgent, newAgent, addAgentError,
       workspaceRunId, latestWorkspaceId, workspaceFiles, selectedFile, fileContent, gitLog,
       logListEl, toasts, showToast, removeToast,
       loadAgents, toggleAgent, toggleSelect, categoryIcon, checkHealth, addAgent, deleteAgent, getAgentCategory, selectPipeline, promptPlaceholder,
       runPipeline, selectStep,
       loadHistory, openWorkspace, loadFile, fileIcon, formatSize,
-      loadMetrics, formatTime, formatTimestamp,
+      loadMetrics, doApprove, formatTime, formatTimestamp,
     };
   }
 }).mount('#app');

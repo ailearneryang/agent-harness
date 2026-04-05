@@ -31,6 +31,8 @@ class RunResponse(BaseModel):
     success: bool
     data: dict | None = None
     error: str | None = None
+    tokens_used: int = 0
+    estimated_cost: float = 0.0
 
 
 @app.get("/health")
@@ -97,7 +99,15 @@ async def _run_llm(requirement: str, loop_count: int, workspace: str) -> RunResp
                 },
             )
             resp.raise_for_status()
-            content = resp.json()["choices"][0]["message"]["content"]
+            resp_data = resp.json()
+            content = resp_data["choices"][0]["message"]["content"]
+            usage = resp_data.get("usage", {})
+            tokens = (
+                usage.get("total_tokens", 0)
+                or usage.get("totalTokens", 0)
+                or (usage.get("prompt_tokens", 0) + usage.get("completion_tokens", 0))
+            )
+            print(f"[RequirementReview] tokens={tokens}, usage={usage}")
     except Exception as e:
         return RunResponse(success=False, error=f"LLM 调用失败: {e}")
 
@@ -112,13 +122,15 @@ async def _run_llm(requirement: str, loop_count: int, workspace: str) -> RunResp
     _write_review(workspace, review, loop_count)
 
     if review.get("passed"):
-        return RunResponse(success=True, data={"review": review, "file": "review_report.md"})
+        return RunResponse(success=True, data={"review": review, "file": "review_report.md"},
+                           tokens_used=tokens, estimated_cost=round(tokens * 0.00015 / 1000, 6))
 
     issues = review.get("issues", ["需求文档质量不达标"])
     return RunResponse(
         success=False,
         error="评审不通过: " + "; ".join(issues),
         data={"review": review, "file": "review_report.md"},
+        tokens_used=tokens, estimated_cost=round(tokens * 0.00015 / 1000, 6),
     )
 
 
@@ -135,10 +147,12 @@ def _run_mock(requirement: str, loop_count: int, workspace: str) -> RunResponse:
         ]
         review = {"passed": False, "score": 35, "issues": issues}
         _write_review(workspace, review, loop_count)
+        mock_tokens = len(requirement) + 500
         return RunResponse(
             success=False,
             error="评审不通过: " + "; ".join(issues),
             data={"review": review, "file": "review_report.md"},
+            tokens_used=mock_tokens, estimated_cost=round(mock_tokens * 0.0001 / 1000, 6),
         )
 
     review = {
@@ -155,7 +169,9 @@ def _run_mock(requirement: str, loop_count: int, workspace: str) -> RunResponse:
         ),
     }
     _write_review(workspace, review, loop_count)
-    return RunResponse(success=True, data={"review": review, "file": "review_report.md"})
+    mock_tokens = len(requirement) + 300
+    return RunResponse(success=True, data={"review": review, "file": "review_report.md"},
+                       tokens_used=mock_tokens, estimated_cost=round(mock_tokens * 0.0001 / 1000, 6))
 
 
 def _write_review(workspace: str, review: dict, loop_count: int):

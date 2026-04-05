@@ -98,6 +98,15 @@ def init_db() -> None:
             enabled INTEGER DEFAULT 1,
             created_at REAL NOT NULL
         );
+
+        CREATE TABLE IF NOT EXISTS pipeline_versions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            version TEXT NOT NULL,
+            config_yaml TEXT NOT NULL,
+            created_at REAL NOT NULL,
+            UNIQUE(name, version)
+        );
     """)
 
 
@@ -236,4 +245,27 @@ class Store:
     def list_dynamic_agents(self) -> list[dict]:
         conn = _get_conn()
         rows = conn.execute("SELECT * FROM dynamic_agents WHERE enabled=1").fetchall()
+        return [dict(r) for r in rows]
+
+    # --- Pipeline Versions ---
+    def save_pipeline_version(self, name: str, version: str, config_yaml: str) -> None:
+        conn = _get_conn()
+        conn.execute(
+            "INSERT OR REPLACE INTO pipeline_versions (name, version, config_yaml, created_at) VALUES (?, ?, ?, ?)",
+            (name, version, config_yaml, time.time()),
+        )
+        conn.commit()
+
+    def get_pipeline_version(self, name: str, version: str) -> dict | None:
+        conn = _get_conn()
+        row = conn.execute(
+            "SELECT * FROM pipeline_versions WHERE name=? AND version=?", (name, version)
+        ).fetchone()
+        return dict(row) if row else None
+
+    def list_pipeline_versions(self, name: str) -> list[dict]:
+        conn = _get_conn()
+        rows = conn.execute(
+            "SELECT name, version, created_at FROM pipeline_versions WHERE name=? ORDER BY created_at DESC", (name,)
+        ).fetchall()
         return [dict(r) for r in rows]

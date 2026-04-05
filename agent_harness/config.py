@@ -63,6 +63,8 @@ def build_pipeline_from_config(config: dict, registry: AgentRegistry) -> Pipelin
             abort_on_fail=step_cfg.get("abort_on_fail", True),
             on_fail_goto=step_cfg.get("on_fail_goto"),
             max_loops=step_cfg.get("max_loops", 3),
+            approval=step_cfg.get("approval", False),
+            approval_message=step_cfg.get("approval_message", ""),
         )
 
     return pipeline

@@ -1,0 +1,14 @@
+name: requirement-with-approval
+description: 需求生成→评审→人工审批→部署，评审不通过自动回退
+default_prompt: 开发一个新能源汽车 BMS 电池管理系统
+
+steps:
+  - agent: RequirementGen
+
+  - agent: RequirementReview
+    on_fail_goto: RequirementGen
+    max_loops: 5
+
+  - agent: Deployer
+    approval: true
+    approval_message: 需求评审已通过，是否批准进入部署阶段？

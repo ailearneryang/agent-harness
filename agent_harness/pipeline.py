@@ -10,16 +10,18 @@ from agent_harness.retry import RetryPolicy, FixedRetry
 
 @dataclass
 class PipelineStep:
-    """Pipeline 中的一个步骤（串行）"""
+    """Pipeline 中的一个步骤"""
     agent: Agent
     retry_policy: RetryPolicy = field(default_factory=lambda: FixedRetry(max_retries=0))
     condition: Callable[[AgentContext, AgentResult | None], bool] | None = None
     abort_on_fail: bool = True
     on_fail_goto: str | None = None
     max_loops: int = 3
-    # 标记是否为并行组
     parallel: bool = False
     parallel_agents: list[Agent] = field(default_factory=list)
+    # 人工审批：执行到此步暂停，等待人工确认
+    approval: bool = False
+    approval_message: str = ""
 
 
 class Pipeline:
@@ -44,6 +46,8 @@ class Pipeline:
         abort_on_fail: bool = True,
         on_fail_goto: str | None = None,
         max_loops: int = 3,
+        approval: bool = False,
+        approval_message: str = "",
     ) -> "Pipeline":
         self.steps.append(
             PipelineStep(
@@ -53,6 +57,8 @@ class Pipeline:
                 abort_on_fail=abort_on_fail,
                 on_fail_goto=on_fail_goto,
                 max_loops=max_loops,
+                approval=approval,
+                approval_message=approval_message,
             )
         )
         return self

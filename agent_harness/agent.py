@@ -27,6 +27,9 @@ class AgentResult:
     error: str | None = None
     duration: float = 0.0
     attempts: int = 1
+    # 成本追踪
+    tokens_used: int = 0          # LLM token 消耗
+    estimated_cost: float = 0.0   # 预估费用（美元）
 
 
 @dataclass
