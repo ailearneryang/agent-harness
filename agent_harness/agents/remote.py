@@ -45,7 +45,9 @@ class RemoteAgent(Agent):
         url = self.health_endpoint or self.endpoint.rsplit("/", 1)[0] + "/health"
         try:
             import httpx
-            async with httpx.AsyncClient(timeout=5.0) as client:
+            # transport 限制只用 IPv4，避免 IPv6 连接问题
+            transport = httpx.AsyncHTTPTransport(local_address="0.0.0.0")
+            async with httpx.AsyncClient(timeout=5.0, transport=transport) as client:
                 resp = await client.get(url, headers=self.headers)
                 return resp.status_code == 200
         except Exception:
@@ -65,7 +67,8 @@ class RemoteAgent(Agent):
             "loop_count": ctx.get("loop_count", 0),
         }
 
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
+        transport = httpx.AsyncHTTPTransport(local_address="0.0.0.0")
+        async with httpx.AsyncClient(timeout=self.timeout, transport=transport) as client:
             resp = await client.post(
                 self.endpoint,
                 json=payload,

@@ -153,7 +153,7 @@
           </div>
           <div class="agent-desc">{{ a.description }}</div>
           <div class="agent-health-warn" v-if="healthData && healthData[a.name] && !healthData[a.name].healthy">
-            ⚠️ Agent 不可用，请检查服务是否启动
+            ⚠️ 不可用 · <a href="javascript:;" style="color:#60a5fa; text-decoration:underline; font-size:12px" @click.stop="checkHealth">重新检查</a>
           </div>
           <div class="agent-footer">
             <span class="agent-state" :class="'state-'+a.state">{{ a.state }}</span>

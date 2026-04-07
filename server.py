@@ -149,7 +149,6 @@ _restore_dynamic_agents()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     import logging as _logging
-    import signal
 
     log_dir = Path(".harness_data/logs")
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -161,35 +160,17 @@ async def lifespan(app: FastAPI):
     scheduler.set_executor(_execute_job)
     await scheduler.start()
     cleanup_task = asyncio.create_task(cleanup_loop(interval_minutes=30, max_age_hours=24, max_count=50))
-
-    # 后台定时健康检查
     health_check_task = asyncio.create_task(_health_check_loop())
-
-    # 配置热重载：监听 agents.yaml 变化
     hot_reload_task = asyncio.create_task(_watch_agents_config())
-
-    # 优雅关闭：收到 SIGTERM/SIGINT 时等正在运行的任务完成
-    shutdown_event = asyncio.Event()
-
-    def _handle_signal():
-        logging.getLogger("agent_harness").info("Shutdown signal received, waiting for running tasks...")
-        shutdown_event.set()
-
-    loop = asyncio.get_running_loop()
-    for sig in (signal.SIGTERM, signal.SIGINT):
-        try:
-            loop.add_signal_handler(sig, _handle_signal)
-        except NotImplementedError:
-            pass  # Windows 不支持
 
     yield
 
-    # 关闭时：停止接收新任务，等待正在运行的任务完成
-    logging.getLogger("agent_harness").info("Shutting down gracefully...")
+    # 优雅关闭
+    logging.getLogger("agent_harness").info("Shutting down...")
     cleanup_task.cancel()
     hot_reload_task.cancel()
     health_check_task.cancel()
-    await scheduler.stop()
+    await scheduler.stop(wait_for_running=True)
     logging.getLogger("agent_harness").info("Shutdown complete.")
 
 app = FastAPI(lifespan=lifespan)

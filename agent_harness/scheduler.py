@@ -75,7 +75,7 @@ class Scheduler:
             running_jobs = [j for j in self._jobs.values() if j.status == "running"]
             if running_jobs:
                 logger.info("Waiting for %d running job(s) to complete...", len(running_jobs))
-                for _ in range(60):
+                for _ in range(10):  # 最多等 10 秒
                     await asyncio.sleep(1)
                     if not any(j.status == "running" for j in self._jobs.values()):
                         break
